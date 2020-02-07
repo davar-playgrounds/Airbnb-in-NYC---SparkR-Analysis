@@ -1,0 +1,30 @@
+---
+title: "Airbnb in NYC with SparkR and Sparkling water"
+author: "Dominik Klepl"
+date: "2/6/2020"
+output: html_document
+---
+
+Load required libraries
+```{r echo=FALSE}
+library(sparklyr)
+library(rsparkling)
+```
+
+Launch Spark session and create Spark context (sc)
+```{r}
+sc = spark_connect(master = "local", version = "2.2.1")
+```
+
+Create H2O context
+```{r}
+hc = H2OContext.getOrCreate(sc)
+```
+
+
+Open H2O (Sparkling water) UI
+```{r}
+hc$openFlow()
+```
+
+
