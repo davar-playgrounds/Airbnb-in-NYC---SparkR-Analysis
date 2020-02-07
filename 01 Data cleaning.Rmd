@@ -5,10 +5,13 @@ date: "2/6/2020"
 output: html_document
 ---
 
+## Connect to Spark
 Load required libraries
 ```{r echo=FALSE}
 library(sparklyr)
 library(rsparkling)
+library(dplyr)
+library(ggplot2) #for plots
 ```
 
 Launch Spark session and create Spark context (sc)
@@ -18,13 +21,34 @@ sc = spark_connect(master = "local", version = "2.2.1")
 
 Create H2O context
 ```{r}
-hc = H2OContext.getOrCreate(sc)
+#hc = H2OContext.getOrCreate(sc)
 ```
-
 
 Open H2O (Sparkling water) UI
 ```{r}
-hc$openFlow()
+#hc$openFlow()
 ```
+
+### Load data
+Our dataset is a csv file. Now we'll load into spark.
+```{r}
+#path to dataset
+DATA_PATH = "data/AB_NYC_2019.csv"
+data = spark_read_csv(sc = sc, name = "data", path = DATA_PATH)
+```
+
+Let's look at the data
+```{r}
+cat("The dataset has", sdf_nrow(data), "datapoints","\nand", sdf_ncol(data), "features.")
+```
+
+Data manipulation
+```{r}
+filter(data, price<152.223)
+```
+
+
+
+
 
 
