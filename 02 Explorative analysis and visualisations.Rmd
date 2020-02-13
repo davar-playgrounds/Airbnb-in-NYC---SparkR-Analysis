@@ -9,22 +9,45 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+# Single variable exploration
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+### Availability
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+We'll start by looking for nonsense values (e.g. availability more than 365)
+```{r}
+data_clean %>%
+  summarise(min = min(availability_365),
+            max = max(availability_365))
 
-```{r cars}
-summary(cars)
+#there is at least one listing that is never available - let's inspect it more
+cat("How many accomodations are never available?",
+    data_clean %>% filter(availability_365==0) %>% sdf_nrow())
 ```
 
-## Including Plots
+### Minimum nights
+```{r}
+data_clean %>%
+  summarise(min = min(minimum_nights),
+            max = max(minimum_nights),
+            mean = mean(minimum_nights),
+            sd = sd(minimum_nights))
 
-You can also embed plots, for example:
+#having minimum nights 999 is obviously ridiculous, let's look at this in more detail
+min_nights = data_clean %>% select(minimum_nights) %>% collect()
+min_nights$minimum_nights = as.numeric(min_nights$minimum_nights)
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+ggplot(min_nights, aes(minimum_nights))+
+  geom_density()
+
+rm(min_nights)
+
+cat("How many accomodations have minimum nights a year or more?",
+    data_clean %>% filter(minimum_nights >= 365) %>% sdf_nrow())
+
+cat("How many accomodations have minimum nights more than mean + 2.5*standard deviation?",
+data_clean %>% filter(minimum_nights >= mean(minimum_nights, na.rm = T)+2.5*sd(minimum_nights, na.rm = T)) %>% sdf_nrow())
+
+
+#let's remove these since they're obviously outliers which would bias the analysis
+data_clean = data_clean %>% filter(minimum_nights <= mean(minimum_nights, na.rm = T)+2.5*sd(minimum_nights, na.rm = T))
 ```
-
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

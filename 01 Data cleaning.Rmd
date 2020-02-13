@@ -36,6 +36,7 @@ Our dataset is a csv file. Now we'll load into spark.
 ```{r}
 #path to dataset
 DATA_PATH = "data/AB_NYC_2019.csv"
+VISUALIZATIONS = "documentation/figures"
 data = spark_read_csv(sc = sc, name = "data", path = DATA_PATH)
 class(data)
 ```
@@ -82,6 +83,8 @@ missing_values = missing_values %>% filter(NAs !=0)
   labs(title = "",
        x = "",
        y = "Sum of missing values"))
+
+ggsave(paste0(VISUALIZATIONS,"/missing_values.png"), NA_plot, width = 7, height = 4)
 ```
 
 Most missing values are in last_review and reviews_per_month. This probably happens when a listing has no reviews yet. Let's test that hypothesis.
@@ -115,6 +118,85 @@ data = data %>%
   mutate(name = ifelse(is.na(name), "Unknown", name)) %>%
   #replace with unknown
   mutate(host_id = ifelse(is.na(host_id), "Unknown", host_id))
+```
+
+Now there is only a few missing values left (around 300), we'll simply exclude those datapoints.
+```{r}
+data = na.omit(data)
+```
+
+## Categorical features
+Make sure that the categories are normalized (e.g. all lowercase)
+
+#### Neighbourhood group
+```{r}
+data %>%
+  distinct(neighbourhood_group) %>%
+  collect()
+
+#there are some strange categories - some number and "D"
+#inspect how many listings there are per neighbourhood group
+neighbourhoods_groups = data %>%
+  group_by(neighbourhood_group) %>%
+  summarise(count = n()) %>%
+  filter(count > 1) %>%
+  collect()
+
+#there are several neighbourhoods with single listing, let's remove those - create list of neighbourhoods to keep, we'll filter later, all at once
+neighbourhood_gr_keep = neighbourhoods_groups$neighbourhood_group
+```
+
+#### Neighbourhood
+```{r}
+data %>%
+  distinct(neighbourhood) %>%
+  arrange(neighbourhood) %>% #order alphabetically
+  mutate(neighbourhood = tolower(neighbourhood)) %>%
+  collect()
+
+#there's many neighbourhoods but again we can see some strange names and it's also possible there will be neighbourhoods with very low number of listings - let's exclude all that have less than 50
+(neighbourhoods = data %>%
+  group_by(neighbourhood) %>%
+  summarise(count = n()) %>%
+  filter(count >= 50) %>%
+  arrange(desc(count)) %>%
+  collect())
+
+#that leaves us with 98 neighbourhoods - let's save those, filter later
+neighbourhood_keep = neighbourhoods$neighbourhood
+```
+
+#### Room type
+```{r}
+data %>%
+  distinct(room_type)
+
+#again, we see strange values, let's get only those that have more than 1 listing
+(room_types = data %>% 
+  group_by(room_type) %>%
+  summarise(count = n()) %>%
+  filter(count > 1) %>%
+  collect())
+
+#let's get a vector of room_types to keep
+room_keep = room_types$room_type
+```
+
+#### Filter categories
+```{r}
+data_clean = data %>%
+  filter(neighbourhood_group %in% neighbourhood_gr_keep) %>%
+  filter(neighbourhood %in% neighbourhood_keep) %>%
+  filter(room_type %in% room_keep)
+
+sdf_nrow(data_clean)
+```
+
+## Save to csv
+Normally, we'd save the data back to HDFS (or any other distributed storage), however we know that this dataset can fit in the memory, so we'll simply collect it from the workers and write it to csv the "classic" way. Sorry.
+```{r}
+write = collect(data_clean)
+write.csv(write, "data/cleaned_data.csv")
 ```
 
 
