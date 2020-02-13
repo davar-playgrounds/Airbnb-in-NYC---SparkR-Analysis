@@ -12,6 +12,8 @@ library(sparklyr)
 library(rsparkling)
 library(dplyr)
 library(ggplot2) #for plots
+library(ggthemes)
+library(magrittr) #pipes support
 ```
 
 Launch Spark session and create Spark context (sc)
@@ -35,6 +37,7 @@ Our dataset is a csv file. Now we'll load into spark.
 #path to dataset
 DATA_PATH = "data/AB_NYC_2019.csv"
 data = spark_read_csv(sc = sc, name = "data", path = DATA_PATH)
+class(data)
 ```
 
 Let's look at the data
@@ -42,13 +45,77 @@ Let's look at the data
 cat("The dataset has", sdf_nrow(data), "datapoints","\nand", sdf_ncol(data), "features.")
 ```
 
-Data manipulation
+What columns do we have?
 ```{r}
-filter(data, price<152.223)
+colnames(data)
+```
+
+Some of these columns won't be very useful in the further analysis so we exclude them.
+```{r}
+data = data %>%
+  select(-c(id, host_name))
 ```
 
 
+## Missing values
+First, we'll deal with the missing values and try to avoid dropping them as much as possible.
+```{r}
+(missing_values = data %>% 
+  mutate_all(is.na) %>%
+  mutate_all(as.numeric) %>%
+  summarise_all(sum) %>% 
+  collect() %>%
+  t() %>%
+  as.data.frame())
+  
+colnames(missing_values) = "NAs"
+missing_values$Feature = rownames(missing_values)
+rownames(missing_values) = NULL
 
+missing_values = missing_values %>% filter(NAs !=0)
+
+(NA_plot = ggplot(missing_values, aes(x = Feature, y = NAs, fill=Feature))+
+  geom_col()+
+  theme_few()+
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())+
+  labs(title = "",
+       x = "",
+       y = "Sum of missing values"))
+```
+
+Most missing values are in last_review and reviews_per_month. This probably happens when a listing has no reviews yet. Let's test that hypothesis.
+```{r}
+#how many number_of_reviews==0 have NA in reviews_per_month 
+NA_test = data %>% 
+  select(number_of_reviews, reviews_per_month, last_review) %>%
+  filter(number_of_reviews==0) %>%
+  mutate(na_month = as.character(is.na(reviews_per_month))) %>%
+  mutate(na_last = as.character(is.na(last_review)))
+
+NA_test %>%
+  group_by(na_month) %>%
+  summarise(count = n())
+
+NA_test %>%
+  group_by(na_last) %>%
+  summarise(count = n())
+```
+
+Most of NAs in last_review and reviews_per_month were indeed the result of having no reviews yet. We can therefore replace these NAs with 0.
+There are also a few missing values in name and host_id, we'll replace these with "unknown" as there might be a use for that column.
+Since host_id and host_name contain the same information, we'll exclude the host_name.
+```{r}
+data = data %>%
+  #replace with 0
+  mutate(last_review = ifelse(is.na(last_review), 0, last_review)) %>% 
+  #replace with 0
+  mutate(reviews_per_month = ifelse(is.na(reviews_per_month), 0, reviews_per_month)) %>% 
+  #replace with unknown
+  mutate(name = ifelse(is.na(name), "Unknown", name)) %>%
+  #replace with unknown
+  mutate(host_id = ifelse(is.na(host_id), "Unknown", host_id))
+```
 
 
 
