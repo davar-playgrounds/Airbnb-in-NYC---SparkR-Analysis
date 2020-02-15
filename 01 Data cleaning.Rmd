@@ -65,7 +65,7 @@ First, we'll deal with the missing values and try to avoid dropping them as much
   mutate_all(is.na) %>%
   mutate_all(as.numeric) %>%
   summarise_all(sum) %>% 
-  collect() %>%
+  sdf_collect() %>%
   t() %>%
   as.data.frame())
   
@@ -132,7 +132,7 @@ Make sure that the categories are normalized (e.g. all lowercase)
 ```{r}
 data %>%
   distinct(neighbourhood_group) %>%
-  collect()
+  sdf_collect()
 
 #there are some strange categories - some number and "D"
 #inspect how many listings there are per neighbourhood group
@@ -140,7 +140,7 @@ neighbourhoods_groups = data %>%
   group_by(neighbourhood_group) %>%
   summarise(count = n()) %>%
   filter(count > 1) %>%
-  collect()
+  sdf_collect()
 
 #there are several neighbourhoods with single listing, let's remove those - create list of neighbourhoods to keep, we'll filter later, all at once
 neighbourhood_gr_keep = neighbourhoods_groups$neighbourhood_group
@@ -152,7 +152,7 @@ data %>%
   distinct(neighbourhood) %>%
   arrange(neighbourhood) %>% #order alphabetically
   mutate(neighbourhood = tolower(neighbourhood)) %>%
-  collect()
+  sdf_collect()
 
 #there's many neighbourhoods but again we can see some strange names and it's also possible there will be neighbourhoods with very low number of listings - let's exclude all that have less than 50
 (neighbourhoods = data %>%
@@ -160,7 +160,7 @@ data %>%
   summarise(count = n()) %>%
   filter(count >= 50) %>%
   arrange(desc(count)) %>%
-  collect())
+  sdf_collect())
 
 #that leaves us with 98 neighbourhoods - let's save those, filter later
 neighbourhood_keep = neighbourhoods$neighbourhood
@@ -176,7 +176,7 @@ data %>%
   group_by(room_type) %>%
   summarise(count = n()) %>%
   filter(count > 1) %>%
-  collect())
+  sdf_collect())
 
 #let's get a vector of room_types to keep
 room_keep = room_types$room_type
@@ -192,11 +192,30 @@ data_clean = data %>%
 sdf_nrow(data_clean)
 ```
 
+#### Looking for nonsense values in continous features
+
+Host id
+```{r}
+data_clean = data_clean %>% 
+  mutate(host_id = as.numeric(host_id)) %>%
+  mutate(latitude = as.numeric(latitude)) %>%
+  mutate(longitude = as.numeric(longitude)) %>%
+  mutate(price = as.numeric(price)) %>%
+  mutate(minimum_nights = as.numeric(minimum_nights)) %>%
+  mutate(number_of_reviews = as.numeric(number_of_reviews)) %>%
+  mutate(reviews_per_month = as.numeric(reviews_per_month)) %>%
+  mutate(calculated_host_listings_count = as.numeric(calculated_host_listings_count)) %>%
+  mutate(availability_365 = as.numeric(availability_365))
+
+data_clean = na.omit(data_clean)
+```
+
+
 ## Save to csv
 Normally, we'd save the data back to HDFS (or any other distributed storage), however we know that this dataset can fit in the memory, so we'll simply collect it from the workers and write it to csv the "classic" way. Sorry.
 ```{r}
-write = collect(data_clean)
-write.csv(write, "data/cleaned_data.csv")
+write = sdf_collect(data_clean)
+readr::write_csv(write, "data/cleaned_data.csv")
 ```
 
 

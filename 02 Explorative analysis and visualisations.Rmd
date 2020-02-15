@@ -5,49 +5,206 @@ date: "2/7/2020"
 output: html_document
 ---
 
+## Load libraries, connect Spark, load data
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+library(sparklyr)
+library(rsparkling)
+library(dplyr)
+library(ggplot2) #for plots
+library(ggthemes)
+library(magrittr) #pipes support
+library(gridExtra) #creating grids of plots
+
+sc = spark_connect(master = "local", version = "2.2.1")
+
+VISUALIZATIONS = "documentation/figures"
+d1 = spark_read_csv(sc = sc, path = "data/cleaned_data.csv")
+d1 = d1 %>% filter(neighbourhood !="1464358")
 ```
 
-# Single variable exploration
+Turn columns into the right format
+```{r}
+d1 = d1 %>% 
+  mutate(host_id = as.numeric(host_id)) %>%
+  mutate(latitude = as.numeric(latitude)) %>%
+  mutate(longitude = as.numeric(longitude)) %>%
+  mutate(price = as.numeric(price)) %>%
+  mutate(minimum_nights = as.numeric(minimum_nights)) %>%
+  mutate(number_of_reviews = as.numeric(number_of_reviews)) %>%
+  mutate(reviews_per_month = as.numeric(reviews_per_month)) %>%
+  mutate(calculated_host_listings_count = as.numeric(calculated_host_listings_count)) %>%
+  mutate(availability_365 = as.numeric(availability_365)) %>%
+  na.omit() %>%
+  rename(desc = name,ID = host_id, listing_host = calculated_host_listings_count, availability = availability_365)
+
+length = sdf_nrow(d1)
+```
+
+
+# Single variable exploration - Hunting outliers
+
+## Distribution
+We'll start by plotting distribution of all numerical variables.
+```{r}
+#histogram
+plot_histogram = function(col) {
+  plot_data = d1 %>% sdf_read_column(col) %>% as.numeric() %>% as.data.frame()
+  colnames(plot_data) = col
+  
+  plot = ggplot(plot_data, aes_string(x = col))+
+  geom_histogram(bins = 30, fill="grey")+
+  theme_few()+
+  scale_fill_few()+
+  guides(fill=F)+
+  labs(title = col,
+       x = "",
+       y = "")+
+  theme(plot.title = element_text(hjust = 0.5, size=9),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank())
+  
+  return(plot)
+}
+
+plot_box = function(col) {
+  plot_data = d1 %>% sdf_read_column(col) %>% as.numeric() %>% as.data.frame()
+  colnames(plot_data) = col
+  
+  plot = ggplot(plot_data, aes_string(y = col))+
+    geom_boxplot()+
+    theme_few()+
+    scale_fill_few()+
+    guides(fill=F)+
+    labs(title = col,
+         x = "",
+         y = "")+
+    theme(plot.title = element_text(hjust = 0.5, size=9))
+  
+  return(plot)
+}
+```
+
+Loop over numeric columns and plot histograms
+```{r}
+numeric_columns = colnames(d1)[c(5,6,8,9,10,12:14)]
+
+histograms = list()
+for (i in 1:length(numeric_columns)){
+  hist = plot_histogram(numeric_columns[i])
+  histograms[[numeric_columns[i]]] = hist
+}
+
+#arrange histograms in 2x4 grid
+do.call("grid.arrange", c(histograms, ncol = 2))
+
+#save the grid as png
+hist_grid = do.call("arrangeGrob", c(histograms, ncol = 2))
+ggsave(paste0(VISUALIZATIONS, "/histogram_grid.png"), hist_grid)
+```
+
+## Boxplots
+```{r}
+boxplots = list()
+for (i in 1:length(numeric_columns)){
+  box = plot_box(numeric_columns[i])
+  boxplots[[numeric_columns[i]]] = box
+}
+
+#arrange histograms in 2x4 grid
+do.call("grid.arrange", c(boxplots, ncol = 2))
+
+#save the grid as png
+box_grid = do.call("arrangeGrob", c(boxplots, ncol = 2))
+ggsave(paste0(VISUALIZATIONS, "/boxplot_grid.png"), box_grid)
+```
+
+
 
 ### Availability
-
 We'll start by looking for nonsense values (e.g. availability more than 365)
 ```{r}
-data_clean %>%
-  summarise(min = min(availability_365),
-            max = max(availability_365))
+d1 %>%
+  sdf_describe("availability")
 
-#there is at least one listing that is never available - let's inspect it more
-cat("How many accomodations are never available?",
-    data_clean %>% filter(availability_365==0) %>% sdf_nrow())
+#there is at least one listing that is never available
+cat("How many accomodations are never available in %?",
+    d1 %>% filter(availability==0) %>% sdf_nrow()/length, "%")
+
+#on the other hand, how many are always available
+cat("How many accomodations are never available in %?",
+    d1 %>% filter(availability==365) %>% sdf_nrow()/length, "%")
 ```
 
 ### Minimum nights
 ```{r}
-data_clean %>%
+d1 %>%
   summarise(min = min(minimum_nights),
             max = max(minimum_nights),
             mean = mean(minimum_nights),
             sd = sd(minimum_nights))
 
-#having minimum nights 999 is obviously ridiculous, let's look at this in more detail
-min_nights = data_clean %>% select(minimum_nights) %>% collect()
-min_nights$minimum_nights = as.numeric(min_nights$minimum_nights)
-
-ggplot(min_nights, aes(minimum_nights))+
-  geom_density()
-
-rm(min_nights)
-
 cat("How many accomodations have minimum nights a year or more?",
-    data_clean %>% filter(minimum_nights >= 365) %>% sdf_nrow())
+    d1 %>% filter(minimum_nights >= 365) %>% sdf_nrow())
 
 cat("How many accomodations have minimum nights more than mean + 2.5*standard deviation?",
-data_clean %>% filter(minimum_nights >= mean(minimum_nights, na.rm = T)+2.5*sd(minimum_nights, na.rm = T)) %>% sdf_nrow())
+d1 %>% filter(minimum_nights >= mean(minimum_nights, na.rm = T)+2.5*sd(minimum_nights, na.rm = T)) %>% sdf_nrow())
 
 
 #let's remove these since they're obviously outliers which would bias the analysis
-data_clean = data_clean %>% filter(minimum_nights <= mean(minimum_nights, na.rm = T)+2.5*sd(minimum_nights, na.rm = T))
+d1 = d1 %>% filter(minimum_nights <= mean(minimum_nights, na.rm = T)+2.5*sd(minimum_nights, na.rm = T))
 ```
+
+## Categorical variables
+
+Summarise the categorical columns - count values per category
+```{r}
+(neigbourhood_gr_count = d1 %>%
+   group_by(neighbourhood_group) %>%
+   summarise(count = n()) %>%
+   arrange(desc(count)) %>%
+   rename(borough = neighbourhood_group) %>%
+   sdf_collect() %>%
+   as.data.frame())
+
+neigbourhood_count = d1 %>%
+  group_by(neighbourhood) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count)) %>%
+  sdf_collect() %>%
+  as.data.frame()
+neigbourhood_count[1:10,]
+
+(room_count = d1 %>%
+  group_by(room_type) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count)) %>%
+  sdf_collect() %>%
+  as.data.frame())
+```
+
+Plot the counts
+```{r}
+ggplot(neigbourhood_gr_count, aes(x = reorder(borough, -count), y = count, fill = borough))+
+  geom_bar(stat = "identity")+
+  theme_few()+
+  scale_fill_tableau()+
+  labs(x = "")+
+  guides(fill = F)
+
+ggplot(neigbourhood_count[1:10,], aes(x = reorder(neighbourhood, -count), y = count, fill = neighbourhood))+
+  geom_bar(stat = "identity")+
+  theme_few()+
+  scale_fill_tableau()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(x = "")+
+  guides(fill = F)
+
+ggplot(room_count, aes(x = reorder(room_type, -count), y = count, fill = room_type))+
+  geom_bar(stat = "identity")+
+  theme_few()+
+  scale_fill_tableau()+
+  labs(x = "")+
+  guides(fill = F)
+```
+
+
