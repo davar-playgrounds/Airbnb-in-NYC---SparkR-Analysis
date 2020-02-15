@@ -14,6 +14,8 @@ library(ggplot2) #for plots
 library(ggthemes)
 library(magrittr) #pipes support
 library(gridExtra) #creating grids of plots
+library(patchwork) #more complicated plot layouts
+library(viridis)
 
 sc = spark_connect(master = "local", version = "2.2.1")
 
@@ -47,15 +49,13 @@ length = sdf_nrow(d1)
 We'll start by plotting distribution of all numerical variables.
 ```{r}
 #histogram
-plot_histogram = function(col) {
-  plot_data = d1 %>% sdf_read_column(col) %>% as.numeric() %>% as.data.frame()
+plot_histogram = function(col, data = d1) {
+  plot_data = data %>% sdf_read_column(col) %>% as.numeric() %>% as.data.frame()
   colnames(plot_data) = col
   
   plot = ggplot(plot_data, aes_string(x = col))+
-  geom_histogram(bins = 30, fill="grey")+
-  theme_few()+
-  scale_fill_few()+
-  guides(fill=F)+
+  geom_histogram(bins = 30, fill="#1F77B4")+
+  theme_few()
   labs(title = col,
        x = "",
        y = "")+
@@ -66,15 +66,13 @@ plot_histogram = function(col) {
   return(plot)
 }
 
-plot_box = function(col) {
-  plot_data = d1 %>% sdf_read_column(col) %>% as.numeric() %>% as.data.frame()
+plot_box = function(col, data = d1) {
+  plot_data = data %>% sdf_read_column(col) %>% as.numeric() %>% as.data.frame()
   colnames(plot_data) = col
   
   plot = ggplot(plot_data, aes_string(y = col))+
     geom_boxplot()+
     theme_few()+
-    scale_fill_few()+
-    guides(fill=F)+
     labs(title = col,
          x = "",
          y = "")+
@@ -99,7 +97,7 @@ do.call("grid.arrange", c(histograms, ncol = 2))
 
 #save the grid as png
 hist_grid = do.call("arrangeGrob", c(histograms, ncol = 2))
-ggsave(paste0(VISUALIZATIONS, "/histogram_grid.png"), hist_grid)
+ggsave(paste0(VISUALIZATIONS, "/histogram_grid.png"), hist_grid, width = 7, height = 7)
 ```
 
 ## Boxplots
@@ -118,40 +116,162 @@ box_grid = do.call("arrangeGrob", c(boxplots, ncol = 2))
 ggsave(paste0(VISUALIZATIONS, "/boxplot_grid.png"), box_grid)
 ```
 
-
-
 ### Availability
-We'll start by looking for nonsense values (e.g. availability more than 365)
+We'll start by looking for nonsense values (e.g. availability more than 365) and explore whether it needs transformations, excluding outliers etc.
 ```{r}
 d1 %>%
   sdf_describe("availability")
 
+#look at its histogram in detail
+histograms$availability
+boxplots$availability
+
 #there is at least one listing that is never available
-cat("How many accomodations are never available in %?",
-    d1 %>% filter(availability==0) %>% sdf_nrow()/length, "%")
+cat("How many accomodations are never available?",
+    d1 %>% filter(availability==0) %>% sdf_nrow())
 
 #on the other hand, how many are always available
-cat("How many accomodations are never available in %?",
-    d1 %>% filter(availability==365) %>% sdf_nrow()/length, "%")
+cat("\nHow many accomodations are always available?",
+    d1 %>% filter(availability==365) %>% sdf_nrow())
 ```
+
+It seems most listing are available only for very narrow time windows. However, there is quite high variation and so the mean and standard deviations are shifted away from the mode.
+Altough log-transform might help to achieve normal distribution, we'd loose data as there are many 0 values (log(0)=infinity).
+
 
 ### Minimum nights
 ```{r}
 d1 %>%
-  summarise(min = min(minimum_nights),
-            max = max(minimum_nights),
-            mean = mean(minimum_nights),
-            sd = sd(minimum_nights))
+  sdf_describe("minimum_nights")
+
+#look at histogram and boxplot
+histograms$minimum_nights
+boxplots$minimum_nights
 
 cat("How many accomodations have minimum nights a year or more?",
     d1 %>% filter(minimum_nights >= 365) %>% sdf_nrow())
 
 cat("How many accomodations have minimum nights more than mean + 2.5*standard deviation?",
 d1 %>% filter(minimum_nights >= mean(minimum_nights, na.rm = T)+2.5*sd(minimum_nights, na.rm = T)) %>% sdf_nrow())
+```
+
+There are 427 datapoints that are more than 2.5 SDs away from mean, it's safe to say that these are outliers, we'll remove them later for modelling purposes.
+```{r}
+#d1 = d1 %>%
+#  filter(minimum_nights <= mean(minimum_nights, na.rm = T)+2.5*sd(minimum_nights, na.rm = T))
+
+#replot histogram
+#plot_histogram("minimum_nights")
+#plot_box("minimum_nights")
+```
+There are still some possible outliers but the spread is significantly lower. Regression models should be able to handle extrapolating these more extreme values.
+
+## Number of reviews
+```{r}
+d1 %>% sdf_describe("number_of_reviews")
+
+#look at plots
+histograms$number_of_reviews
+boxplots$number_of_reviews
+```
+
+We can see some extreme values again.
+```{r}
+d1 %>%
+  filter(number_of_reviews >= mean(number_of_reviews, na.rm = T)+2.5*sd(number_of_reviews, na.rm = T)) %>%
+  sdf_nrow()
+
+d1 %>%
+  filter(number_of_reviews == 0) %>%
+  sdf_nrow()
+```
 
 
-#let's remove these since they're obviously outliers which would bias the analysis
-d1 = d1 %>% filter(minimum_nights <= mean(minimum_nights, na.rm = T)+2.5*sd(minimum_nights, na.rm = T))
+## Reviews per month
+```{r}
+d1 %>% sdf_describe("reviews_per_month")
+
+histograms$reviews_per_month
+boxplots$reviews_per_month
+```
+
+Most listings receive approx 1 review/month with a few extremes.
+
+## Listings per host + host_ID
+```{r}
+d1 %>% sdf_describe("listing_host")
+
+histograms$listing_host
+```
+
+This feature is a bit misleading since there are duplicates (listings from the same host). Let's recompute the statistics by looking at unique values.
+```{r}
+listings = d1 %>% select(ID, listing_host) %>% distinct() %>% arrange(desc(listing_host))
+
+listings %>% sdf_describe("listing_host")
+
+#replot histogram and boxplot
+(hist_listings = plot_histogram("listing_host", listings))
+(box_listings = plot_box("listing_host", listings))
+
+#update grids of plots
+histograms[["listing_host"]] = hist_listings
+boxplots[["listing_host"]] = box_listings
+
+#save to png again
+box_grid = do.call("arrangeGrob", c(boxplots, ncol = 2))
+ggsave(paste0(VISUALIZATIONS, "/boxplot_grid.png"), box_grid)
+hist_grid = do.call("arrangeGrob", c(histograms, ncol = 2))
+ggsave(paste0(VISUALIZATIONS, "/histogram_grid.png"), hist_grid, width = 7, height = 7)
+```
+
+Most hosts have only 1 listing on average. However, there are clearly some who have sort of a network of listings. Let's look at the top 10.
+```{r}
+#collect listings to R
+listing_data  = sdf_collect(listings)
+listing_data = listing_data[1:10,]
+listing_data$ID = as.factor(listing_data$ID)
+
+#plot trend of owning airbnb
+(top_hosts = ggplot(listing_data, aes(x = reorder(ID, -listing_host), y = listing_host, fill = ID))+
+  geom_bar(stat = "identity")+
+  theme_few()+
+  scale_fill_tableau()+
+  guides(fill = F)+
+  labs(x = "",
+       y = "Listings")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)))
+ggsave(paste0(VISUALIZATIONS, "/top_hosts_listings.png"), top_hosts)
+
+#save top 10 IDs for later
+top10 = as.numeric(listing_data$ID)
+```
+
+## Price
+```{r}
+d1 %>% sdf_describe("price")
+
+histograms$price
+boxplots$price
+```
+
+There are some ridiculously expensive listings. On the other hand, there's at least one listing which is offered for free.
+To explore the distribution of more common prices, we'll remove these extremes for now.
+```{r}
+cat("There are", d1 %>% filter(price == 0) %>% sdf_nrow(), "listings offered for free.")
+
+#Let's at their descriptions
+d1 %>% filter(price == 0) %>% select(desc) #these mostly look like it's a some invalid data
+
+#remove those free places immediately
+d1 = d1 %>% filter(price > 0)
+
+#Let's look at descriptions of the most expensive listings
+d1 %>% filter(price > 5000) %>% select(price,desc) %>% arrange(desc(price))
+
+prices = d1 %>% filter(price < 600) 
+
+plot_histogram("price", prices)
 ```
 
 ## Categorical variables
@@ -184,14 +304,14 @@ neigbourhood_count[1:10,]
 
 Plot the counts
 ```{r}
-ggplot(neigbourhood_gr_count, aes(x = reorder(borough, -count), y = count, fill = borough))+
+categ1 = ggplot(neigbourhood_gr_count, aes(x = reorder(borough, -count), y = count, fill = borough))+
   geom_bar(stat = "identity")+
   theme_few()+
   scale_fill_tableau()+
   labs(x = "")+
   guides(fill = F)
 
-ggplot(neigbourhood_count[1:10,], aes(x = reorder(neighbourhood, -count), y = count, fill = neighbourhood))+
+categ2 = ggplot(neigbourhood_count[1:10,], aes(x = reorder(neighbourhood, -count), y = count, fill = neighbourhood))+
   geom_bar(stat = "identity")+
   theme_few()+
   scale_fill_tableau()+
@@ -199,12 +319,141 @@ ggplot(neigbourhood_count[1:10,], aes(x = reorder(neighbourhood, -count), y = co
   labs(x = "")+
   guides(fill = F)
 
-ggplot(room_count, aes(x = reorder(room_type, -count), y = count, fill = room_type))+
+categ3 = ggplot(room_count, aes(x = reorder(room_type, -count), y = count, fill = room_type))+
   geom_bar(stat = "identity")+
   theme_few()+
   scale_fill_tableau()+
   labs(x = "")+
   guides(fill = F)
+
+#arrange plots in nice layout
+(categorical_counts = (categ1 + categ3)/categ2)
+
+ggsave(paste0(VISUALIZATIONS, "/categorical_counts.png"), categorical_counts)
 ```
+
+# Price vs. rest
+Becaue we're mainly interested in prices, we'll now explore the relationship of price and other variables.
+
+### Price vs. Borough
+```{r}
+price_bor = d1 %>%
+   group_by(neighbourhood_group) %>%
+   summarise(mean = mean(price),
+             sd = sd(price)) %>%
+  sdf_collect()
+
+(price_bor_bar = ggplot(price_bor, aes(x = reorder(neighbourhood_group, -mean), y = mean, fill = neighbourhood_group))+
+  geom_col(color = "black", size = 0.3)+
+  geom_errorbar(aes(ymin =mean-0.5*sd, ymax = mean+0.5*sd))+
+  theme_few()+
+  scale_fill_tableau()+
+  guides(fill = F)+
+  labs(x = "",
+       y = "price")+
+  theme(axis.text.x = element_text(angle = 30, hjust = 1)))
+
+ggsave(paste0(VISUALIZATIONS, "/price_borough.png"), price_bor_bar)
+```
+
+### Price vs. Neighbourhood
+```{r}
+price_nei = d1 %>%
+  group_by(neighbourhood) %>%
+  summarise(mean = mean(price),
+            sd = sd(price)) %>%
+  arrange(desc(mean)) %>%
+  sdf_collect()
+
+(price_nei_point = ggplot(price_nei, aes(x = reorder(neighbourhood, -mean), y = mean))+
+  geom_point()+
+  theme_few()+
+  labs(x = "",
+       y = "price"))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 4))
+
+(price_nei_bar = ggplot(price_nei[1:10,], aes(x = reorder(neighbourhood, -mean), y = mean, fill = neighbourhood))+
+  geom_col(color = "black", size = 0.3)+
+  geom_errorbar(aes(ymin =mean-0.5*sd, ymax = mean+0.5*sd), width = 0.5)+
+  theme_few()+
+  scale_fill_tableau()+
+  guides(fill = F)+
+  labs(x = "",
+       y = "price")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)))
+
+ggsave(paste0(VISUALIZATIONS, "/price_neighbourhoood_all.png"), price_nei_point)
+ggsave(paste0(VISUALIZATIONS, "/price_neighbourhoood_top10.png"), price_nei_bar)
+```
+
+### Price vs. Room type
+```{r}
+(price_type = d1 %>%
+  group_by(room_type) %>%
+  summarise(mean = mean(price),
+            sd = sd(price)) %>%
+  arrange(desc(mean)) %>%
+  sdf_collect())
+
+(price_type_bar = ggplot(price_type, aes(x = reorder(room_type, -mean), y = mean, fill = room_type))+
+  geom_col(color = "black", size = 0.3)+
+  geom_errorbar(aes(ymin =mean-0.5*sd, ymax = mean+0.5*sd), width = 0.5)+
+  theme_few()+
+  scale_fill_tableau()+
+  guides(fill = F)+
+  labs(x = "",
+       y = "price")+
+  theme(axis.text.x = element_text(angle = 30, hjust = 1)))
+```
+
+## Price vs Borough/Room type
+Let's look whether there is interaction between borough and room type that explains the price variations.
+```{r}
+borough_type = d1 %>%
+  mutate(borough_type = paste(neighbourhood_group, room_type, sep = "-")) %>%
+  group_by(borough_type) %>%
+  summarise(mean = mean(price),
+            sd = sd(price)) %>%
+  sdf_collect() %>%
+  tidyr::separate(borough_type, c("borough", "room_type"), sep = "-")
+
+(borough_type_bar = ggplot(borough_type, aes(fill=room_type, y=mean, x=borough))+
+  geom_col(position="dodge", color = "black", size = 0.3)+
+  geom_errorbar(aes(ymin =mean-0.5*sd, ymax = mean+0.5*sd), position = position_dodge(0.9), width = 0.5)+
+  theme_few()+
+  scale_fill_tableau(name = "Room type")+
+  labs(x = "",
+       y = "price"))
+```
+
+#### Borough/type vs price layout
+```{r}
+(bor_type_layout = (price_bor_bar + price_type_bar) / borough_type_bar)
+ggsave(paste0(VISUALIZATIONS, "/borough_type.png"), bor_type_layout, width = 7, height = 6)
+```
+
+## Maps
+```{r}
+price_data = d1 %>% 
+  select(latitude, longitude, price) %>%
+  filter(price <500)
+
+ggplot(price_data, aes(x = longitude, y = latitude, color = price))+
+  geom_point()+
+  scale_color_viridis()+
+  theme_map()
+```
+
+
+
+
+
+
+
+
+
+
+
+
 
 
