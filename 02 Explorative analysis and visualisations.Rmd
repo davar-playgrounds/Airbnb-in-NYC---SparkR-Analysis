@@ -16,6 +16,7 @@ library(magrittr) #pipes support
 library(gridExtra) #creating grids of plots
 library(patchwork) #more complicated plot layouts
 library(viridis)
+library(ggmap)
 
 sc = spark_connect(master = "local", version = "2.2.1")
 
@@ -229,11 +230,10 @@ Most hosts have only 1 listing on average. However, there are clearly some who h
 ```{r}
 #collect listings to R
 listing_data  = sdf_collect(listings)
-listing_data = listing_data[1:10,]
 listing_data$ID = as.factor(listing_data$ID)
 
 #plot trend of owning airbnb
-(top_hosts = ggplot(listing_data, aes(x = reorder(ID, -listing_host), y = listing_host, fill = ID))+
+(top_hosts = ggplot(listing_data[1:10,], aes(x = reorder(ID, -listing_host), y = listing_host, fill = ID))+
   geom_bar(stat = "identity")+
   theme_few()+
   scale_fill_tableau()+
@@ -243,9 +243,10 @@ listing_data$ID = as.factor(listing_data$ID)
   theme(axis.text.x = element_text(angle = 45, hjust = 1)))
 ggsave(paste0(VISUALIZATIONS, "/top_hosts_listings.png"), top_hosts)
 
-#save top 10 IDs for later
-top10 = as.numeric(listing_data$ID)
-```
+#IDs for later with more than 10
+topID = listing_data %>% filter(listing_host>=10) %>% select(ID)
+topID = as.numeric(as.character(topID$ID))
+``` 
 
 ## Price
 ```{r}
@@ -433,17 +434,67 @@ ggsave(paste0(VISUALIZATIONS, "/borough_type.png"), bor_type_layout, width = 7, 
 ```
 
 ## Maps
+First, we create a background map of New York City + some detailed maps of boroughs
 ```{r}
-price_data = d1 %>% 
-  select(latitude, longitude, price) %>%
-  filter(price <500)
+register_google(key = "AIzaSyB_CZHsa2vTarsq5zlDxB-CbMnCGj7xa1s")
 
-ggplot(price_data, aes(x = longitude, y = latitude, color = price))+
-  geom_point()+
-  scale_color_viridis()+
-  theme_map()
+
+#New York
+lat = d1 %>% summarise(lat = mean(latitude)) %>% sdf_collect %>% as.numeric()
+lon = d1 %>% summarise(lon = mean(longitude)) %>% sdf_collect %>% as.numeric()
+
+nyc = get_googlemap(center = c(lon = lon, lat = lat),
+                     zoom = 11, scale = 2,
+                     maptype = "roadmap",
+                     color = "color")
 ```
 
+### Price map
+```{r}
+price_data = d1 %>% 
+  select(latitude, longitude, price, neighbourhood_group) %>%
+  filter(price <500)
+
+(price_map = ggmap(nyc)+
+  geom_point(data = price_data,aes(x = longitude, y = latitude, color = price), alpha = 0.8)+
+  theme_map()+
+  scale_color_gradient2_tableau())
+
+ggsave(paste0(VISUALIZATIONS, "/price_map.png"), price_map)
+```
+
+## Network of hosts
+```{r}
+multi_hosts = d1 %>% filter(ID %in% topID) %>% sdf_collect()
+
+lat = multi_hosts %>% summarise(lat = mean(latitude)) %>% as.numeric()
+lon = multi_hosts %>% summarise(lon = mean(longitude)) %>% as.numeric()
+
+nyc = get_googlemap(center = c(lon = lon, lat = lat),
+                     zoom = 12, scale = 2,
+                     maptype = "roadmap",
+                     color = "color")
+
+ggmap(nyc) +
+  geom_line(data = multi_hosts,aes(x = longitude, y = latitude, color = factor(ID)))+
+  geom_point(data = multi_hosts,aes(x = longitude, y = latitude, color = factor(ID)),size=0.3)+
+  guides(color=F)+
+  theme_void()+
+  scale_color_manual(values = rainbow(length(unique(multi_hosts$ID))))
+
+cols = rep("#002a75", 36079)
+(network = ggplot(d1,aes(x = longitude, y = latitude, color=factor(ID)))+
+  geom_line(aes(alpha=price))+
+  geom_point(aes(alpha=price), size=0.01)+
+  guides(color=F, alpha=F)+
+  theme_void()+
+  scale_color_manual(values = cols)+
+  theme(plot.background = element_rect(fill="black", color="black")))
+
+golden_ratio = (1+sqrt(5))/2
+n = 7
+ggsave(paste0(VISUALIZATIONS, "/network_full.png"), network, dpi=600, height = n, width = n*golden_ratio)
+```
 
 
 
