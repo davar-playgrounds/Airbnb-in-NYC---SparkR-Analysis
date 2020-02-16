@@ -436,7 +436,7 @@ ggsave(paste0(VISUALIZATIONS, "/borough_type.png"), bor_type_layout, width = 7, 
 ## Maps
 First, we create a background map of New York City + some detailed maps of boroughs
 ```{r}
-register_google(key = "AIzaSyB_CZHsa2vTarsq5zlDxB-CbMnCGj7xa1s")
+register_google(key = "XXX")
 
 
 #New York
