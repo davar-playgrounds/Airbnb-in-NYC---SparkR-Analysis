@@ -1,4 +1,5 @@
 install.packages("sparklyr")
+install.packages("SparkR")
 
 library(sparklyr)
 spark_install(version = "2.2")

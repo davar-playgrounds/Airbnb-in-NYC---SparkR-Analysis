@@ -496,6 +496,10 @@ n = 7
 ggsave(paste0(VISUALIZATIONS, "/network_full.png"), network, dpi=600, height = n, width = n*golden_ratio)
 ```
 
+```{r}
+write = sdf_collect(d1)
+readr::write_csv(write, "data/cleaned_data.csv")
+```
 
 
 
