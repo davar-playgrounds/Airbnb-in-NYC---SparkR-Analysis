@@ -5,26 +5,346 @@ date: "2/7/2020"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+```{r setup}
+library(rsparkling)
+library(sparklyr)
+library(dplyr)
+library(ggplot2) #for plots
+library(ggthemes)
+library(magrittr) #pipes support
+library(h2o)
+library(patchwork)
+
+sc = spark_connect(master = "local", version = "2.2.1")
+
+DATA_PATH = "data/cleaned_data.csv"
+VISUALIZATIONS = "documentation/figures"
+data = spark_read_csv(sc = sc, name = "data", path = DATA_PATH)
 ```
 
-## R Markdown
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+### Set schema
+```{r}
+data = data %>% 
+  mutate(ID = as.numeric(ID)) %>%
+  mutate(latitude = as.numeric(latitude)) %>%
+  mutate(longitude = as.numeric(longitude)) %>%
+  mutate(price = as.numeric(price)) %>%
+  mutate(minimum_nights = as.numeric(minimum_nights)) %>%
+  mutate(number_of_reviews = as.numeric(number_of_reviews)) %>%
+  mutate(reviews_per_month = as.numeric(reviews_per_month)) %>%
+  mutate(listing_host = as.numeric(listing_host)) %>%
+  mutate(availability = as.numeric(availability)) %>%
+  na.omit() %>%
+  select(-desc, -last_review, -ID)
 ```
 
-## Including Plots
+# Data transformation
 
-You can also embed plots, for example:
+### Price
+```{r}
+transformed = data %>%
+  filter(price < 1000) %>%
+  mutate(price = log(price))
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+(price_dens = ggplot(transformed, aes(price))+
+  geom_density())
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+### Minimum nights
+```{r}
+transformed = transformed %>%
+  mutate(minimum_nights = log1p(minimum_nights))
+
+(minimum_dens = ggplot(transformed)+
+  geom_density(aes(minimum_nights)))
+```
+
+### N of reviews
+```{r}
+#feature engineer - no reviews
+transformed = transformed %>%
+  mutate(no_reviews = case_when(number_of_reviews==0 ~ 1,
+                                number_of_reviews!=0 ~ 0))
+
+transformed = transformed %>%
+  mutate(number_of_reviews = log1p(number_of_reviews))
+
+(n_reviews_dens = ggplot(transformed,aes(number_of_reviews))+
+  geom_density())
+```
+
+### Reviews per month
+```{r}
+transformed = transformed %>%
+  mutate(reviews_per_month = log1p(reviews_per_month))
+
+(reviews_month_dens = ggplot(transformed, aes(reviews_per_month))+
+  geom_density())
+```
+
+### Availability
+```{r}
+transformed = transformed %>%
+  mutate(all_year = case_when(availability >= 353 ~ 1,
+                              availability < 353 ~ 0)) %>%
+  mutate(low_availability = case_when(availability <= 14 ~ 1,
+                              availability > 14 ~ 0))
+
+(availability_dens = ggplot(transformed, aes(availability))+
+  geom_density())
+```
+
+# H2O + Spark = Sparkling Water
+Start H2O
+```{r}
+hc = H2OContext.getOrCreate(sc)
+hc$openFlow
+```
+
+Make the data accesible to H2O
+```{r}
+df_h2o = hc$asH2OFrame(transformed)
+
+df_h2o$neighbourhood = as.factor(df_h2o$neighbourhood)
+df_h2o$neighbourhood_group = as.factor(df_h2o$neighbourhood_group)
+df_h2o$room_type = as.factor(df_h2o$room_type)
+df_h2o$no_reviews = as.factor(df_h2o$no_reviews)
+df_h2o$all_year = as.factor(df_h2o$all_year)
+df_h2o$low_availability = as.factor(df_h2o$low_availability)
+```
+
+## Train-test split
+We'll use 80% for training and 20% for testing.
+```{r}
+sets = h2o.splitFrame(df_h2o, ratios = 0.8)
+
+train = sets[[1]]
+test = sets[[2]]
+
+cat("Training:", nrow(sets[[1]]), "\nTesting: ", nrow(sets[[2]]))
+```
+
+#### Variables for models
+```{r}
+x = colnames(df_h2o)[-6]
+y = colnames(df_h2o)[6]
+n_folds = 10
+```
+
+
+# Model training
+
+##Generalized linear model
+The function implements random search for best lambda
+```{r}
+glm_fit <- h2o.glm(x = x,
+                   y = y,
+                   training_frame = train,
+                   nfolds = n_folds,
+                   lambda_search = T,
+                   early_stopping = T
+               )
+
+#save results
+(CV_glm = glm_fit@model$cross_validation_metrics_summary %>% select(mean, sd))
+
+(glm_test = h2o.performance(glm_fit, newdata = test))
+```
+
+##Random forest
+```{r}
+rf_par = list(ntrees = seq(10,80,2),
+              max_depth = seq(4,16,1))
+strategy = list(strategy = "RandomDiscrete", 
+                         max_models = 50)
+
+
+forests = h2o.grid("randomForest",
+                   grid_id = "forest_grid",
+                   x = x,
+                  y = y,
+                  training_frame = train,
+                  nfolds = n_folds,
+                  categorical_encoding = "AUTO",
+                  hyper_params = rf_par,
+                  search_criteria = strategy)
+
+forests_summary = h2o.getGrid(grid_id = "forest_grid",
+                              sort_by = "mse",
+                              decreasing = T)
+forests_summary
+
+#get the best random forest
+best_forest = h2o.getModel(forests_summary@model_ids[[1]])
+
+(CV_forest = best_forest@model$cross_validation_metrics_summary %>% select(mean, sd))
+
+#compute performance on testing
+(forest_test = h2o.performance(best_forest, newdata = test))
+```
+
+
+##XGBoosts
+```{r}
+automl = h2o.automl(x = x,
+                    y = y,
+                    training_frame = train,
+                    nfolds = 10,
+                    stopping_metric = "AUTO",
+                    project_name = "automl",
+                    max_runtime_secs = 4000
+                    )
+```
+
+# Model evaluation
+Let's compare the performance of all 3 trained models. The selection metric is MSE.
+```{r}
+#rbind the results together
+results = rbind(CV_glm[1,],
+                CV_forest[1,])
+results$test = c(glm_test@metrics$MSE, forest_test@metrics$MSE)
+results$model = factor(c("Elastic Net", "Random Forest"))
+
+results$mean = as.numeric(results$mean)
+results$sd = as.numeric(results$sd)
+results$test = as.numeric(results$test)
+
+
+(results_plot = ggplot(results, aes(x = model, y = mean, fill = model))+
+  geom_col()+
+  geom_errorbar(aes(ymin = mean-2.5*sd, ymax = mean+2.5*sd))+
+  geom_point(aes(y = test), size = 3)+
+  theme_few()+
+  scale_fill_tableau()+
+  guides(fill = F)+
+  labs(subtitle = "X denotes score on testing data",
+       x = "",
+       y = "MSE")+
+  theme(plot.subtitle = element_text(hjust = 0.5)))
+
+ggsave(paste0(VISUALIZATIONS, "/model_results.png"), results_plot)
+```
+
+# Model interpretation
+
+## Feature importance plots
+```{r}
+importance_glm = h2o.varimp(glm_fit)
+importance_forest = h2o.varimp(best_forest)
+
+cols = rep("#446794", 10)
+
+(imp_plot_glm = ggplot(importance_glm[1:10,], aes(x = reorder(variable, scaled_importance), y = scaled_importance, fill = factor(variable)))+
+  geom_col()+
+  theme_few()+
+  guides(fill = F)+
+  labs(x = "",
+       y = "",
+       title = "Feature importance for GLM")+
+  coord_flip()+
+  theme(plot.title = element_text(hjust = 0.5))+
+  scale_fill_manual(values = cols))
+
+ggsave(paste0(VISUALIZATIONS, "/imp_glm.png"), imp_plot_glm)
+
+(imp_plot_rf = ggplot(importance_forest[1:10,], aes(x = reorder(variable, scaled_importance), y = scaled_importance, fill = factor(variable)))+
+  geom_col()+
+  theme_few()+
+  guides(fill = F)+
+  labs(x = "",
+       y = "",
+       title = "Feature importance for Random Forest")+
+  coord_flip()+
+  theme(plot.title = element_text(hjust = 0.5))+
+  scale_fill_manual(values = cols))
+
+ggsave(paste0(VISUALIZATIONS, "/imp_rf.png"), imp_plot_rf)
+```
+
+## Partial Dependence plots
+```{r}
+numeric_cols = colnames(transformed)[c(3:4,7:11)]
+
+#compute partial plots for all numeric features
+glm_partial = h2o.partialPlot(glm_fit, data = train, cols = numeric_cols, nbins = 30)
+forest_partial = h2o.partialPlot(best_forest, data = train, cols = numeric_cols, nbins = 30)
+
+#transform to normal scale
+glm_partial[[3]] = mutate_all(glm_partial[[3]], exp)
+glm_partial[[4]] = mutate_all(glm_partial[[4]], exp)
+glm_partial[[5]] = mutate_all(glm_partial[[5]], exp)
+forest_partial[[3]] = mutate_all(forest_partial[[3]], exp)
+forest_partial[[4]] = mutate_all(forest_partial[[4]], exp)
+forest_partial[[5]] = mutate_all(forest_partial[[5]], exp)
+
+glm_partial[[1]][,2:4] = mutate_all(glm_partial[[1]][,2:4], exp)
+glm_partial[[2]][,2:4] = mutate_all(glm_partial[[2]][,2:4], exp)
+glm_partial[[6]][,2:4] = mutate_all(glm_partial[[6]][,2:4], exp)
+glm_partial[[7]][,2:4] = mutate_all(glm_partial[[7]][,2:4], exp)
+forest_partial[[1]][,2:4] = mutate_all(forest_partial[[1]][,2:4], exp)
+forest_partial[[2]][,2:4] = mutate_all(forest_partial[[2]][,2:4], exp)
+forest_partial[[6]][,2:4] = mutate_all(forest_partial[[6]][,2:4], exp)
+forest_partial[[7]][,2:4] = mutate_all(forest_partial[[7]][,2:4], exp)
+
+#combine data to one df
+glm_partials = data.frame()
+
+for (i in 1:7){
+  partial = glm_partial[[i]]
+  partial$variable = rep(colnames(partial)[1], 30)
+  colnames(partial)[1] = "x"
+  glm_partials = rbind(glm_partials, partial)
+}
+
+forest_partials = data.frame()
+
+for (i in 1:7){
+  partial = forest_partial[[i]]
+  partial$variable = rep(colnames(partial)[1], 30)
+  colnames(partial)[1] = "x"
+  forest_partials = rbind(forest_partials, partial)
+}
+
+readr::write_csv(glm_partials, "data/glm_partial.csv")
+readr::write_csv(forest_partials, "data/forest_partial.csv")
+```
+
+Plot the partial plots
+```{r}
+var = "latitude"
+
+plot_partial = function(var, data, model) {
+  plot = data %>% filter(variable==var) %>%
+    ggplot(aes(x = x, y = mean_response, 
+             ymin = mean_response-std_error_mean_response,
+             ymax = mean_response+std_error_mean_response))+
+    geom_line(color = "#4E79A7")+
+    geom_ribbon(alpha = 0.2, fill = "#F28E2B")+
+    theme_few()+
+    labs(x = "",
+       y = "price",
+       title = toupper(var))+
+    theme(plot.title = element_text(hjust = 0.5))
+  
+  ggsave(paste0(VISUALIZATIONS, "/", var, "_" ,model, ".png"), plot)
+  return(plot)
+}
+
+(latitude_glm = plot_partial("latitude", glm_partials, "glm"))
+(longitude_glm = plot_partial("longitude", glm_partials, "glm"))
+(minimum_glm = plot_partial("minimum_nights", glm_partials, "glm"))
+(reviewsn_glm = plot_partial("number_of_reviews", glm_partials, "glm"))
+(reviewsm_glm = plot_partial("reviews_per_month", glm_partials, "glm"))
+(listhost_glm = plot_partial("listing_host", glm_partials, "glm"))
+(avail_glm = plot_partial("availability", glm_partials, "glm"))
+
+(latitude_forest = plot_partial("latitude", forest_partials, "forest"))
+(longitude_forest = plot_partial("longitude", forest_partials, "forest"))
+(minimum_forest = plot_partial("minimum_nights", forest_partials, "forest"))
+(reviewsn_forest = plot_partial("number_of_reviews", forest_partials, "forest"))
+(reviewsm_forest = plot_partial("reviews_per_month", forest_partials, "forest"))
+(listhost_forest = plot_partial("listing_host", forest_partials, "forest"))
+(avail_forest = plot_partial("availability", forest_partials, "forest"))
+```
+
+
