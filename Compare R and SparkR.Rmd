@@ -1,0 +1,156 @@
+---
+title: "Comparing R and SparkR"
+author: "Dominik Klepl"
+date: "2/17/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(sparklyr)
+library(tictoc)
+library(dplyr)
+library(ggplot2)
+library(ggthemes)
+```
+
+# Time Spark
+```{r}
+tic("Connect Spark")
+sc = spark_connect(master = "local", version = "2.2.1")
+start = toc()
+
+tic("total")
+tic("Reading data")
+data = spark_read_csv(sc = sc, name = "data", path = "data/cleaned_data.csv")
+read = toc()
+
+tic("Handling missing values + setting schema")
+data = data %>% 
+  mutate(ID= as.numeric(ID)) %>%
+  mutate(latitude = as.numeric(latitude)) %>%
+  mutate(longitude = as.numeric(longitude)) %>%
+  mutate(price = as.numeric(price)) %>%
+  mutate(minimum_nights = as.numeric(minimum_nights)) %>%
+  mutate(number_of_reviews = as.numeric(number_of_reviews)) %>%
+  mutate(reviews_per_month = as.numeric(reviews_per_month)) %>%
+  mutate(listing_host = as.numeric(listing_host)) %>%
+  mutate(availability = as.numeric(availability)) %>%
+  na.omit()
+schema = toc()
+
+tic("Compute summary, arrange and plot")
+data %>%
+   group_by(neighbourhood_group) %>%
+   summarise(mean = mean(price),
+             sd = sd(price)) %>%
+  ggplot(aes(x = reorder(neighbourhood_group, -mean), y = mean, fill = neighbourhood_group))+
+  geom_col(color = "black", size = 0.3)+
+  geom_errorbar(aes(ymin =mean-0.5*sd, ymax = mean+0.5*sd))+
+  guides(fill = F)
+plot = toc()
+
+tic("Filter")
+data = data %>% 
+  filter(price < 1000) %>%
+  select(-desc, -last_review, -ID, -neighbourhood)
+filter = toc()
+
+tic("Fit model")
+model = data %>%
+  ml_linear_regression(price ~ .)
+summary(model)
+fitting = toc()
+
+total = toc()
+
+#collect time
+times = c(start$toc[[1]] - start$tic[[1]],
+          read$toc[[1]] - read$tic[[1]],
+          schema$toc[[1]] - schema$tic[[1]],
+          plot$toc[[1]] - plot$tic[[1]],
+          filter$toc[[1]] - filter$tic[[1]],
+          fitting$toc[[1]] - fitting$tic[[1]],
+          total$toc[[1]] - total$tic[[1]])
+flags = c("start", "read", "schema", "plot", "filter", "fitting", "total")
+
+spark_time = cbind(flags, times) %>% as.data.frame()
+```
+
+#Time R
+```{r}
+tic("Total")
+tic("Reading")
+data = read.csv("data/cleaned_data.csv")
+read = toc()
+
+tic("Handling missing values + setting schema")
+data = data %>% 
+  mutate(ID= as.numeric(ID)) %>%
+  mutate(latitude = as.numeric(latitude)) %>%
+  mutate(longitude = as.numeric(longitude)) %>%
+  mutate(price = as.numeric(price)) %>%
+  mutate(minimum_nights = as.numeric(minimum_nights)) %>%
+  mutate(number_of_reviews = as.numeric(number_of_reviews)) %>%
+  mutate(reviews_per_month = as.numeric(reviews_per_month)) %>%
+  mutate(listing_host = as.numeric(listing_host)) %>%
+  mutate(availability = as.numeric(availability)) %>%
+  na.omit()
+schema = toc()
+
+tic("Compute summary, arrange and plot")
+data %>%
+   group_by(neighbourhood_group) %>%
+   summarise(mean = mean(price),
+             sd = sd(price)) %>%
+  ggplot(aes(x = reorder(neighbourhood_group, -mean), y = mean, fill = neighbourhood_group))+
+  geom_col(color = "black", size = 0.3)+
+  geom_errorbar(aes(ymin =mean-0.5*sd, ymax = mean+0.5*sd))+
+  guides(fill = F)
+plot = toc()
+
+tic("Filter")
+data = data %>% 
+  filter(price < 1000) %>%
+  select(-desc, -last_review, -ID, -neighbourhood)
+filter = toc()
+
+tic("Fit model")
+model = lm(price ~ ., data = data)
+summary(model)
+fitting = toc()
+
+total = toc()
+
+#collect time
+times = c(read$toc[[1]] - read$tic[[1]],
+          schema$toc[[1]] - schema$tic[[1]],
+          plot$toc[[1]] - plot$tic[[1]],
+          filter$toc[[1]] - filter$tic[[1]],
+          fitting$toc[[1]] - fitting$tic[[1]],
+          total$toc[[1]] - total$tic[[1]])
+flags = c("read", "schema", "plot", "filter", "fitting", "total")
+
+R_time = cbind(flags, times) %>% as.data.frame()
+```
+
+# Evaluation
+```{r}
+spark_time$framework = rep("Spark", nrow(spark_time)) %>% as.factor()
+R_time$framework = rep("R", nrow(R_time)) %>% as.factor()
+
+time = rbind(spark_time,R_time)
+time$times = time$times %>% as.character() %>% as.numeric()
+time= time %>% filter(flags != "start")
+
+(compare_plot = ggplot(time, aes(x = reorder(flags, -times), y = times, fill = framework))+
+  geom_col(position="dodge")+
+  theme_few()+
+  scale_fill_tableau(name = "Framework")+
+  labs(x = "",
+       y = "seconds"))
+
+ggsave("documentation/figures/comparison.png", compare_plot)
+
+spark_disconnect(sc)
+```
+
