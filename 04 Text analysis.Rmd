@@ -1,0 +1,256 @@
+---
+title: "04 Text analysis"
+author: "Dominik Klepl"
+date: "2/19/2020"
+output: html_document
+---
+
+Load libraries and connect to spark
+```{r}
+library(sparklyr)
+library(dplyr)
+library(ggplot2) #for plots
+library(ggthemes)
+library(magrittr) #pipes support
+library(patchwork) #more complicated plot layouts
+library(wordcloud) #self-explanatory
+
+sc = spark_connect(master = "local", version = "2.2.1")
+```
+
+Load data
+```{r}
+data = spark_read_csv(sc = sc, path = "data/cleaned_data.csv")
+```
+
+In this part of analysis we're mostly interested whether we can find some interesting differences in the descriptions of the accommodation. We will investigate whether the descriptions change with the location. So we'll keep only the neighbourhood. Also to see whether more expensive accommodation has different description then cheaper one, we'll create "price categories".
+```{r}
+data = data %>% select(desc, neighbourhood_group, price)
+
+data = data %>%
+  mutate(
+    price_category = case_when(
+      price <= 50 ~ "50$ and less",
+      price > 50 & price <= 100 ~ "50$-100$",
+      price > 100 & price < 200 ~ "100$-200$",
+      price >= 200 & price < 400 ~ "200$-400$",
+      price >= 400 & price < 1000 ~ "400$-Max",
+      price >= 1000 ~ "1000$ and more"
+    )
+  ) %>%
+  select(-price)
+```
+
+
+First, the description needs some cleaning. We'll start by removing punctuation and turn everything to lowercase. Also there are some descriptions in chinese,japanese etc. Let's remove these characters using their unicode codes.
+```{r}
+data = data %>%
+  mutate(desc = regexp_replace(desc, "[.,?:;&'/\\!1-9#+_()%=-@<>§-]", " ")) %>%
+  mutate(desc = regexp_replace(desc, "[\U4E00-\U9FFF\U3000-\U303F]", " ")) %>%
+  mutate(desc = tolower(desc))
+
+head(data,50)
+```
+
+Now we split each description into single words and save them in a list. Next we remove stopwords.
+```{r}
+data = data %>%
+  ft_tokenizer(input_col = "desc",output_col = "words") %>%
+  ft_stop_words_remover(input_col = "words",
+                        output_col = "words_cleaned")
+
+head(data)
+```
+
+We explode the dataset so that every word is on separate row. Exploding creates separate rows also for spaces so we'll fill those with NAs and simply drop them. Also we filter out words that are 2 or less characters long.
+```{r}
+exploded = data %>%
+  mutate(word = explode(words_cleaned)) %>%
+  select(-words, -words_cleaned) %>%
+  mutate(word = ifelse(word=="", NA, word)) %>%
+  filter(nchar(word) > 2)
+
+cat("There are", sdf_nrow(exploded), "words in our corpus.")
+cat("BUT 'only'",exploded %>% select(word) %>% distinct() %>% sdf_nrow(),"unique words.")
+
+t = sdf_collect(exploded)
+```
+
+Now, we can simply group by neighbourhood or price_category and count the most used words and of course visualise them.
+```{r}
+borough_counts = exploded %>%
+  select(-price_category) %>%
+  group_by(neighbourhood_group, word) %>%
+  summarise(count = n()) %>%
+  ungroup() %>%
+  arrange(desc(count))
+
+price_counts = exploded %>%
+  select(-neighbourhood_group) %>%
+  group_by(price_category, word) %>%
+  summarise(count = n()) %>%
+  ungroup() %>%
+  arrange(desc(count))
+```
+
+Plot top 10 words for each neighbourhood
+```{r}
+brooklyn = borough_counts %>% 
+  filter(neighbourhood_group=="Brooklyn") %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(word, -count), y = count, fill=factor(word)))+
+  geom_col()+
+  guides(fill = F)+
+  theme_few()+
+  scale_fill_tableau()+
+  labs(x = "",
+       title = "Brooklyn")+
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+manhattan = borough_counts %>% 
+  filter(neighbourhood_group=="Manhattan") %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(word, -count), y = count, fill=factor(word)))+
+  geom_col()+
+  guides(fill = F)+
+  theme_few()+
+  scale_fill_tableau()+
+  labs(x = "",
+       title = "Manhattan")+
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+bronx = borough_counts %>% 
+  filter(neighbourhood_group=="Bronx") %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(word, -count), y = count, fill=factor(word)))+
+  geom_col()+
+  guides(fill = F)+
+  theme_few()+
+  scale_fill_tableau()+
+  labs(x = "",
+       title = "Bronx")+
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+queens = borough_counts %>% 
+  filter(neighbourhood_group=="Queens") %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(word, -count), y = count, fill=factor(word)))+
+  geom_col()+
+  guides(fill = F)+
+  theme_few()+
+  scale_fill_tableau()+
+  labs(x = "",
+       title = "Queens")+
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+(words_boroughs = (brooklyn+manhattan)/(bronx+queens))
+
+ggsave("documentation/figures/words_borough.png", words_boroughs)
+```
+
+Plot top 10 words in each price category
+```{r}
+cheap = price_counts %>% 
+  filter(price_category=="50$ and less") %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(word, -count), y = count, fill=factor(word)))+
+  geom_col()+
+  guides(fill = F)+
+  theme_few()+
+  scale_fill_tableau()+
+  labs(x = "",
+       title = "50$ and less")+
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+good = price_counts %>% 
+  filter(price_category=="50$-100$") %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(word, -count), y = count, fill=factor(word)))+
+  geom_col()+
+  guides(fill = F)+
+  theme_few()+
+  scale_fill_tableau()+
+  labs(x = "",
+       title = "50$-100$")+
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+normal = price_counts %>% 
+  filter(price_category=="100$-200$") %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(word, -count), y = count, fill=factor(word)))+
+  geom_col()+
+  guides(fill = F)+
+  theme_few()+
+  scale_fill_tableau()+
+  labs(x = "",
+       title = "100$-200$")+
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+expensive = price_counts %>% 
+  filter(price_category=="200$-400$") %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(word, -count), y = count, fill=factor(word)))+
+  geom_col()+
+  guides(fill = F)+
+  theme_few()+
+  scale_fill_tableau()+
+  labs(x = "",
+       title = "200$-400$")+
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+luxury = price_counts %>% 
+  filter(price_category=="400$-Max") %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(word, -count), y = count, fill=factor(word)))+
+  geom_col()+
+  guides(fill = F)+
+  theme_few()+
+  scale_fill_tableau()+
+  labs(x = "",
+       title = "400$-Max")+
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+(price_text = cheap / luxury)
+
+ggsave("documentation/figures/words_price.png", price_text)
+```
+
+Wordclouds
+```{r}
+#Manhattan
+png("documentation/figures/manhattan_cloud.png")
+borough_counts %>%
+  filter(neighbourhood_group=="Manhattan") %>%
+  head(50) %>%
+  sdf_collect() %>%
+  with(wordcloud(word, count, colors = brewer.pal(3, "Dark2")))
+dev.off()
+
+#Brooklyn
+png("documentation/figures/brooklyn_cloud.png")
+borough_counts %>%
+  filter(neighbourhood_group=="Brooklyn") %>%
+  head(50) %>%
+  sdf_collect() %>%
+  with(wordcloud(word, count, colors = brewer.pal(3, "Dark2")))
+dev.off()
+
+#Cheapest
+png("documentation/figures/cheap_cloud.png")
+price_counts %>%
+  filter(price_category=="50$ and less") %>%
+  head(50) %>%
+  sdf_collect() %>%
+  with(wordcloud(word, count, colors = brewer.pal(3, "Dark2")))
+dev.off()
+
+#luxurious
+png("documentation/figures/luxury_cloud.png")
+price_counts %>%
+  filter(price_category=="400$-Max") %>%
+  head(50) %>%
+  sdf_collect() %>%
+  with(wordcloud(word, count, colors = brewer.pal(3, "Dark2")))
+dev.off()
+```
+
