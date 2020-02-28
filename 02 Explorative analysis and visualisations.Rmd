@@ -2,7 +2,9 @@
 title: "02 Explorative analysis and visualisations"
 author: "Dominik Klepl"
 date: "2/7/2020"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 ## Load libraries, connect Spark, load data
@@ -28,17 +30,16 @@ d1 = d1 %>% filter(neighbourhood !="1464358")
 Turn columns into the right format
 ```{r}
 d1 = d1 %>% 
-  mutate(host_id = as.numeric(host_id)) %>%
+  mutate(ID = as.numeric(ID)) %>%
   mutate(latitude = as.numeric(latitude)) %>%
   mutate(longitude = as.numeric(longitude)) %>%
   mutate(price = as.numeric(price)) %>%
   mutate(minimum_nights = as.numeric(minimum_nights)) %>%
   mutate(number_of_reviews = as.numeric(number_of_reviews)) %>%
   mutate(reviews_per_month = as.numeric(reviews_per_month)) %>%
-  mutate(calculated_host_listings_count = as.numeric(calculated_host_listings_count)) %>%
-  mutate(availability_365 = as.numeric(availability_365)) %>%
-  na.omit() %>%
-  rename(desc = name,ID = host_id, listing_host = calculated_host_listings_count, availability = availability_365)
+  mutate(listing_host = as.numeric(listing_host)) %>%
+  mutate(availability = as.numeric(availability)) %>%
+  na.omit()
 
 length = sdf_nrow(d1)
 ```
@@ -157,15 +158,6 @@ d1 %>% filter(minimum_nights >= mean(minimum_nights, na.rm = T)+2.5*sd(minimum_n
 ```
 
 There are 427 datapoints that are more than 2.5 SDs away from mean, it's safe to say that these are outliers, we'll remove them later for modelling purposes.
-```{r}
-#d1 = d1 %>%
-#  filter(minimum_nights <= mean(minimum_nights, na.rm = T)+2.5*sd(minimum_nights, na.rm = T))
-
-#replot histogram
-#plot_histogram("minimum_nights")
-#plot_box("minimum_nights")
-```
-There are still some possible outliers but the spread is significantly lower. Regression models should be able to handle extrapolating these more extreme values.
 
 ## Number of reviews
 ```{r}
@@ -433,10 +425,61 @@ borough_type = d1 %>%
 ggsave(paste0(VISUALIZATIONS, "/borough_type.png"), bor_type_layout, width = 7, height = 6)
 ```
 
+##Price vs. numeric
+```{r}
+(price_long = ggplot(d1, aes(x = longitude, y = price, color=room_type))+
+  geom_point()+
+  theme_few()+
+  scale_color_tableau()+
+  guides(color=F))
+
+(price_lat = ggplot(d1, aes(x = latitude, y = price, color=room_type))+
+  geom_point()+
+  theme_few()+
+  scale_color_tableau()+
+  guides(color=F))
+
+(price_nights = ggplot(d1, aes(x = minimum_nights, y = price, color=room_type))+
+  geom_point()+
+  theme_few()+
+  scale_color_tableau()+
+  guides(color=F))
+
+(price_revnum = ggplot(d1, aes(x = number_of_reviews, y = price, color=room_type))+
+  geom_point()+
+  theme_few()+
+  scale_color_tableau()+
+  guides(color=F))
+
+(price_revmon = ggplot(d1, aes(x = latitude, y = reviews_per_month, color=room_type))+
+  geom_point()+
+  theme_few()+
+  scale_color_tableau()+
+  guides(color=F))
+
+(price_listhost = ggplot(d1, aes(x = listing_host, y = price, color=room_type))+
+  geom_point()+
+  theme_few()+
+  scale_color_tableau()+
+  guides(color=F))
+
+(price_avail = ggplot(d1, aes(x = availability, y = price, color=room_type))+
+  geom_point()+
+  theme_few()+
+  scale_color_tableau())
+
+scatter_grid = (price_long + price_lat)/
+  (price_nights + price_revnum)/
+  (price_listhost + price_avail)
+
+ggsave(paste0(VISUALIZATIONS, "/scatterplots.png"), scatter_grid, width = 7, height = 5.5)
+```
+
+
 ## Maps
 First, we create a background map of New York City + some detailed maps of boroughs
 ```{r}
-register_google(key = "XXX")
+register_google(key = "AIzaSyB_CZHsa2vTarsq5zlDxB-CbMnCGj7xa1s")
 
 
 #New York
@@ -482,7 +525,7 @@ ggmap(nyc) +
   theme_void()+
   scale_color_manual(values = rainbow(length(unique(multi_hosts$ID))))
 
-cols = rep("#002a75", 36079)
+cols = rep("#002a75", sdf_nrow(d1))
 (network = ggplot(d1,aes(x = longitude, y = latitude, color=factor(ID)))+
   geom_line(aes(alpha=price))+
   geom_point(aes(alpha=price), size=0.01)+

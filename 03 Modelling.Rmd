@@ -1,8 +1,10 @@
 ---
-title: "03 Modelling"
+title: "04 Modelling"
 author: "Dominik Klepl"
 date: "2/7/2020"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 ```{r setup}
@@ -137,7 +139,7 @@ n_folds = 10
 ##Generalized linear model
 The function implements random search for best lambda
 ```{r}
-glm_fit <- h2o.glm(x = x,
+glm_fit = h2o.glm(x = x,
                    y = y,
                    training_frame = train,
                    nfolds = n_folds,
@@ -156,8 +158,7 @@ glm_fit <- h2o.glm(x = x,
 rf_par = list(ntrees = seq(10,80,2),
               max_depth = seq(4,16,1))
 strategy = list(strategy = "RandomDiscrete", 
-                         max_models = 50)
-
+                         max_models = 10)
 
 forests = h2o.grid("randomForest",
                    grid_id = "forest_grid",
@@ -181,19 +182,6 @@ best_forest = h2o.getModel(forests_summary@model_ids[[1]])
 
 #compute performance on testing
 (forest_test = h2o.performance(best_forest, newdata = test))
-```
-
-
-##XGBoosts
-```{r}
-automl = h2o.automl(x = x,
-                    y = y,
-                    training_frame = train,
-                    nfolds = 10,
-                    stopping_metric = "AUTO",
-                    project_name = "automl",
-                    max_runtime_secs = 4000
-                    )
 ```
 
 # Model evaluation

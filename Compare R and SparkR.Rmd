@@ -1,8 +1,10 @@
 ---
-title: "Comparing R and SparkR"
+title: "05 Comparing R and Spark"
 author: "Dominik Klepl"
 date: "2/17/2020"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 ```{r setup, include=FALSE}

@@ -1,8 +1,10 @@
 ---
-title: "04 Text analysis"
+title: "03 Text analysis"
 author: "Dominik Klepl"
 date: "2/19/2020"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 Load libraries and connect to spark
@@ -50,6 +52,18 @@ data = data %>%
   mutate(desc = tolower(desc))
 
 head(data,50)
+
+data %>%
+  mutate(desc = regexp_replace(desc, "[.,?:;&'/\\!1-9#+_()%=-@<>§-]", " ")) %>%
+  mutate(desc = regexp_replace(desc, "[\U4E00-\U9FFF\U3000-\U303F]", " ")) %>%
+  mutate(desc = tolower(desc)) %>%
+  ft_tokenizer(input_col = "desc",output_col = "words") %>%
+  ft_stop_words_remover(input_col = "words",
+                        output_col = "words_cleaned") %>%
+  mutate(word = explode(words_cleaned)) %>%
+  select(-words, -words_cleaned) %>%
+  mutate(word = ifelse(word=="", NA, word)) %>%
+  filter(nchar(word) > 2)
 ```
 
 Now we split each description into single words and save them in a list. Next we remove stopwords.

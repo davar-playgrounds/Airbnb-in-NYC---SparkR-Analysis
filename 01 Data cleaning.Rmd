@@ -2,7 +2,9 @@
 title: "Airbnb in NYC with SparkR and Sparkling water"
 author: "Dominik Klepl"
 date: "2/6/2020"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 ## Connect to Spark
@@ -19,16 +21,6 @@ library(magrittr) #pipes support
 Launch Spark session and create Spark context (sc)
 ```{r}
 sc = spark_connect(master = "local", version = "2.2.1")
-```
-
-Create H2O context
-```{r}
-#hc = H2OContext.getOrCreate(sc)
-```
-
-Open H2O (Sparkling water) UI
-```{r}
-#hc$openFlow()
 ```
 
 ### Load data
@@ -54,7 +46,7 @@ colnames(data)
 Some of these columns won't be very useful in the further analysis so we exclude them.
 ```{r}
 data = data %>%
-  select(-c(id, host_name))
+  select(-id, -host_name)
 ```
 
 
@@ -192,9 +184,7 @@ data_clean = data %>%
 sdf_nrow(data_clean)
 ```
 
-#### Looking for nonsense values in continous features
 
-Host id
 ```{r}
 data_clean = data_clean %>% 
   mutate(host_id = as.numeric(host_id)) %>%
@@ -205,7 +195,8 @@ data_clean = data_clean %>%
   mutate(number_of_reviews = as.numeric(number_of_reviews)) %>%
   mutate(reviews_per_month = as.numeric(reviews_per_month)) %>%
   mutate(calculated_host_listings_count = as.numeric(calculated_host_listings_count)) %>%
-  mutate(availability_365 = as.numeric(availability_365))
+  mutate(availability_365 = as.numeric(availability_365)) %>%
+  rename(desc = name,ID = host_id, listing_host = calculated_host_listings_count, availability = availability_365)
 
 data_clean = na.omit(data_clean)
 ```
